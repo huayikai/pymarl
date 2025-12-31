@@ -118,7 +118,7 @@ class DVDMixer(nn.Module):
         self.init_weights()
 
         # 归一化
-        self.layernorm = nn.LayerNorm(self.embed_dim)
+        # self.layernorm = nn.LayerNorm(self.embed_dim)
 
     def init_weights(self):
         for m in self.modules():
@@ -171,13 +171,13 @@ class DVDMixer(nn.Module):
         b1 = self.hyper_b_1(states).view(-1, 1, self.embed_dim)
 
         # 源代码
-        # hidden = F.elu(th.bmm(agent_qs, w1) + b1)
+        hidden = F.elu(th.bmm(agent_qs, w1) + b1)
 
-        # 添加layernorm
-        hidden = th.bmm(agent_qs, w1) + b1
-        # 插入 LayerNorm，防止数值爆炸
-        hidden = self.layernorm(hidden) 
-        hidden = F.elu(hidden)
+        # # 添加layernorm
+        # hidden = th.bmm(agent_qs, w1) + b1
+        # # 插入 LayerNorm，防止数值爆炸
+        # hidden = self.layernorm(hidden) 
+        # hidden = F.elu(hidden)
         
         w_final = self.hyper_w_final(states)
         if self.abs:
