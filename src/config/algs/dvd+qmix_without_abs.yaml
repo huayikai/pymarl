@@ -28,7 +28,7 @@ abs: False
 mixing_embed_dim: 32
 hypernet_embed: 64
 lr: 0.001 # Learning rate for agents
-td_lambda: 0.3  # 原来0.6 # 0.3 for 6h_vs_8z
+td_lambda: 0.3  # 原来0.6 
 optimizer: 'adam'
 q_lambda: False
 
@@ -46,7 +46,7 @@ per_beta: 0.4
 return_priority: False
 
 use_rnd: True
-rnd_beta: 0.01 # 原来是0.05      # [重要] 内在奖励的权重 (beta)
+rnd_beta: 0.005 #0.01 # 原来是0.05      # [重要] 内在奖励的权重 (beta)
 rnd_lr: 0.0005         # RND 网络的学习率
 state_shape: 0         # 这个通常由 PyMARL 自动从环境信息中获取，不需要手动填
 
