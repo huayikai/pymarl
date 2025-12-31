@@ -1,0 +1,8 @@
+results/
+models/
+__pycache__/
+*.pth
+*.pt
+*.log
+.idea/
+.vscode/
