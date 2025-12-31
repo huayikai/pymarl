@@ -45,6 +45,7 @@ per_alpha: 0.6
 per_beta: 0.4
 return_priority: False
 
+
 use_rnd: True
 rnd_beta: 0.01 # 原来是0.05      # [重要] 内在奖励的权重 (beta)
 rnd_lr: 0.0005         # RND 网络的学习率
