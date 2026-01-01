@@ -54,4 +54,7 @@ dvd_heads: 8         # DVD 采样次数
 gat_embed_dim: 32 # 16    # GAT 内部维度
 rnn_hidden_dim: 64   # 必须与你的 agent rnn 维度一致
 
+# 稀疏化参数
+gat_top_k: 4
+
 name: "dvd+qmix_without_abs"

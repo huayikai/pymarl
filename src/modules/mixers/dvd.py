@@ -7,11 +7,13 @@ import numpy as np
 # 对应论文公式 (8), (9), (10)
 # 这里的图是全连接的 (Fully Connected)，所以我们不需要邻接矩阵，直接做 Attention
 class MultiHeadGAT(nn.Module):
-    def __init__(self, input_dim, hidden_dim, n_heads):
+    def __init__(self, input_dim, hidden_dim, n_heads, top_k=None):
         super(MultiHeadGAT, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.n_heads = n_heads
+
+        self.top_k = top_k # 保存 k 值
         
         # W 矩阵: 将输入的 hidden_state 映射到 GAT 的特征空间
         # 输出维度: n_heads * hidden_dim
@@ -55,6 +57,26 @@ class MultiHeadGAT(nn.Module):
         # attention score: (bs, heads, n_agents, n_agents)
         e = (h_cat * self.att_a.unsqueeze(2).unsqueeze(3)).sum(dim=-1)
         e = self.leaky_relu(e)
+
+        # 稀疏图
+        if self.top_k is not None and 0 < self.top_k < n_agents:
+            # 1. 找到前 k 个最大的值的索引
+            _, topk_indices = th.topk(e, k=self.top_k, dim=-1)
+            
+            # 2. 创建基础 mask (Top-K 位置为 True)
+            mask_bool = th.zeros_like(e, dtype=th.bool)
+            mask_bool.scatter_(-1, topk_indices, True)
+            
+            # 3. [关键步骤] 强制保留对角线
+            # 生成对角线 mask (1, 1, n, n)
+            diag_mask = th.eye(n_agents, device=e.device, dtype=th.bool).view(1, 1, n_agents, n_agents)
+            
+            # 使用逻辑或 (|) 操作：保留 (Top-K节点) 或 (自己)
+            mask_bool = mask_bool | diag_mask
+            
+            # 4. 应用 Mask: 将不需要保留的位置设为 -inf (Softmax 后变为 0)
+            # 注意取反操作 ~mask_bool
+            e = e.masked_fill(~mask_bool, -1e9)
         
         # 计算 alpha_ij (公式 9)
         attention = F.softmax(e, dim=-1) # 对 j 维度做 softmax
@@ -88,8 +110,10 @@ class DVDMixer(nn.Module):
         self.n_heads = getattr(args, 'dvd_heads', 4)
         self.gat_dim = getattr(args, 'gat_embed_dim', 32)
 
+        self.gat_top_k = getattr(args, 'gat_top_k', None)
+
         # 组件 1: GAT
-        self.gat = MultiHeadGAT(self.rnn_hidden_dim, self.gat_dim, self.n_heads)
+        self.gat = MultiHeadGAT(self.rnn_hidden_dim, self.gat_dim, self.n_heads, top_k=self.gat_top_k)
 
         # [修正 1] 移除残差连接的维度，回归纯粹的 DVD 逻辑
         # 这样能保证 GAT 真正起到 "Proxy Confounder" 的过滤作用 
