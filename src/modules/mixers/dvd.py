@@ -97,7 +97,11 @@ class DVDMixer(nn.Module):
         self.combined_dim = self.gat_dim 
 
         # 组件 2: 状态超网络 (生成 W1)
-        self.hyper_w_1_state = nn.Linear(self.state_dim, self.n_heads * self.embed_dim * self.combined_dim)
+        # self.hyper_w_1_state = nn.Linear(self.state_dim, self.n_heads * self.embed_dim * self.combined_dim)
+
+        # 生成双通道的w_1
+        self.hyper_w_1_state = nn.Linear(args.state_shape, 2 * self.n_heads * self.embed_dim * self.combined_dim)
+
         self.hyper_b_1 = nn.Linear(self.state_dim, self.embed_dim)
 
         # 组件 3: 第二层混合 (W_final)
@@ -140,7 +144,7 @@ class DVDMixer(nn.Module):
                 self.hyper_w_final[-1].weight.data.mul_(0.01)
 
     def forward(self, agent_qs, states, hidden_states):
-        bs = agent_qs.size(0) 
+        bs = agent_qs.size(0)
         states = states.reshape(-1, self.state_dim)
         agent_qs = agent_qs.reshape(-1, 1, self.n_agents)
         hidden_states = hidden_states.reshape(-1, self.n_agents, self.rnn_hidden_dim)
@@ -148,24 +152,46 @@ class DVDMixer(nn.Module):
         # Step 1: GAT 采样
         graphs_out = self.gat(hidden_states) # (bs*T, heads, agents, gat_dim)
         
-        # [修正 1] 移除残差拼接
-        # graphs_combined = th.cat([graphs_out, h_expanded], dim=-1)
         # 直接使用 GAT 输出作为去混淆后的特征
         graphs_final = graphs_out
 
-        # Step 2: 计算 W1
-        w1_state = self.hyper_w_1_state(states)
-        w1_state = w1_state.view(-1, self.n_heads, self.embed_dim, self.combined_dim)
-        
+        # Step 2: 计算 W1 (修改点：显式协作-牺牲建模)
+        # 准备 GAT 特征矩阵 (bs*T, heads, combined_dim, agents)
         graphs_T = graphs_final.permute(0, 1, 3, 2)
+
+        # 获取双倍维度的输出，并在维度 1 拆分为 (Synergy, Sacrifice)
+        # 假设 __init__ 中 output_dim 已经翻倍
+        w1_all = self.hyper_w_1_state(states)
+        w1_all = w1_all.view(-1, 2, self.n_heads, self.embed_dim, self.combined_dim)
         
-        w1_heads = th.matmul(w1_state, graphs_T)
+        # 拆分为协作 (Synergy) 和 牺牲 (Sacrifice) 生成器
+        w1_syn_state = w1_all[:, 0] # (bs*T, n_heads, embed_dim, combined_dim)
+        w1_sac_state = w1_all[:, 1] # (bs*T, n_heads, embed_dim, combined_dim)
         
+        # 分别计算原始权重
+        # (bs*T, heads, embed, combined) @ (bs*T, heads, combined, agents) -> (bs*T, heads, embed, agents)
+        w1_syn_raw = th.matmul(w1_syn_state, graphs_T)
+        w1_sac_raw = th.matmul(w1_sac_state, graphs_T)
+        
+        # 显式建模：W = ReLU(Synergy) - ReLU(Sacrifice)
+        # 强制两者非负，从而赋予结果明确的物理意义
+        w1_syn = F.relu(w1_syn_raw)
+        w1_sac = F.relu(w1_sac_raw)
+        
+        # 组合得到最终的 W1 (自然包含正负值)
+        w1_heads = w1_syn - w1_sac
+        
+        # 保存用于可视化的数据 (如果需要写论文画图)
+        # self.w1_syn_debug = w1_syn.detach().mean(dim=1) 
+        # self.w1_sac_debug = w1_sac.detach().mean(dim=1)
+
+        # 如果保留 abs=True (一般这里设为 False)，则覆盖上述逻辑
         if self.abs:
             w1_heads = th.abs(w1_heads)
             
+        # 多头平均
         w1 = w1_heads.mean(dim=1)
-        w1 = w1.permute(0, 2, 1)
+        w1 = w1.permute(0, 2, 1) # (bs*T, agents, embed)
 
         # Step 3: 混合
         b1 = self.hyper_b_1(states).view(-1, 1, self.embed_dim)
@@ -176,9 +202,10 @@ class DVDMixer(nn.Module):
         # # 添加layernorm
         # hidden = th.bmm(agent_qs, w1) + b1
         # # 插入 LayerNorm，防止数值爆炸
-        # hidden = self.layernorm(hidden) 
+        # hidden = self.layernorm(hidden)
         # hidden = F.elu(hidden)
-        
+
+        # 后续部分保持不变...
         w_final = self.hyper_w_final(states)
         if self.abs:
             w_final = th.abs(w_final)
