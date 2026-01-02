@@ -97,10 +97,7 @@ class DVDMixer(nn.Module):
         self.combined_dim = self.gat_dim 
 
         # 组件 2: 状态超网络 (生成 W1)
-        # self.hyper_w_1_state = nn.Linear(self.state_dim, self.n_heads * self.embed_dim * self.combined_dim)
-
-        self.hyper_w_1_state = nn.Linear(args.state_shape, self.n_heads * self.embed_dim * self.combined_dim)
-
+        self.hyper_w_1_state = nn.Linear(self.state_dim, self.n_heads * self.embed_dim * self.combined_dim)
         self.hyper_b_1 = nn.Linear(self.state_dim, self.embed_dim)
 
         # 组件 3: 第二层混合 (W_final)
@@ -150,7 +147,7 @@ class DVDMixer(nn.Module):
 
         # Step 1: GAT 采样
         graphs_out = self.gat(hidden_states) # (bs*T, heads, agents, gat_dim)
-
+        
         # [修正 1] 移除残差拼接
         # graphs_combined = th.cat([graphs_out, h_expanded], dim=-1)
         # 直接使用 GAT 输出作为去混淆后的特征
@@ -159,14 +156,14 @@ class DVDMixer(nn.Module):
         # Step 2: 计算 W1
         w1_state = self.hyper_w_1_state(states)
         w1_state = w1_state.view(-1, self.n_heads, self.embed_dim, self.combined_dim)
-
+        
         graphs_T = graphs_final.permute(0, 1, 3, 2)
-
+        
         w1_heads = th.matmul(w1_state, graphs_T)
-
+        
         if self.abs:
             w1_heads = th.abs(w1_heads)
-
+            
         w1 = w1_heads.mean(dim=1)
         w1 = w1.permute(0, 2, 1)
 
@@ -181,18 +178,19 @@ class DVDMixer(nn.Module):
         # # 插入 LayerNorm，防止数值爆炸
         # hidden = self.layernorm(hidden) 
         # hidden = F.elu(hidden)
-
+        
         w_final = self.hyper_w_final(states)
         if self.abs:
             w_final = th.abs(w_final)
         w_final = w_final.view(-1, self.embed_dim, 1)
-
+        
         v = self.V(states).view(-1, 1, 1)
-
+        
         y = th.bmm(hidden, w_final) + v
         q_tot = y.view(bs, -1, 1)
-
+        
         return q_tot
+
 
 ###########################################
 # 把自己的hidden_state加入了
