@@ -1,0 +1,112 @@
+{
+  "artifacts": [],
+  "command": "my_main",
+  "experiment": {
+    "base_dir": "/home/zhangbei/pymarl2/ResQ/ResQ/src",
+    "dependencies": [
+      "munch==2.5.0",
+      "numpy==1.24.3",
+      "PyYAML==5.3.1",
+      "sacred==0.7.5",
+      "torch==1.12.1"
+    ],
+    "mainfile": "main.py",
+    "name": "pymarl",
+    "repositories": [],
+    "sources": [
+      [
+        "main.py",
+        "_sources/main_e64c9e75052b870d80499c5fea9fa334.py"
+      ],
+      [
+        "utils/logging.py",
+        "_sources/logging_ce9a261c391cbeae67129d3d806d06da.py"
+      ]
+    ]
+  },
+  "fail_trace": [
+    "Traceback (most recent call last):\n",
+    "  File \"/home/zhangbei/miniconda3/envs/pymarl/lib/python3.8/site-packages/sacred/config/captured_function.py\", line 48, in captured_function\n    result = wrapped(*args, **kwargs)\n",
+    "  File \"src/main.py\", line 35, in my_main\n    run_REGISTRY[_config['run']](_run, config, _log)\n",
+    "  File \"/home/zhangbei/pymarl2/ResQ/ResQ/src/run/run.py\", line 54, in run\n    run_sequential(args=args, logger=logger)\n",
+    "  File \"/home/zhangbei/pymarl2/ResQ/ResQ/src/run/run.py\", line 177, in run_sequential\n    episode_batch = runner.run(test_mode=False)\n",
+    "  File \"/home/zhangbei/pymarl2/ResQ/ResQ/src/runners/episode_runner.py\", line 49, in run\n    self.reset()\n",
+    "  File \"/home/zhangbei/pymarl2/ResQ/ResQ/src/runners/episode_runner.py\", line 45, in reset\n    self.env.reset()\n",
+    "  File \"/home/zhangbei/pymarl2/ResQ/ResQ/src/smac/env/starcraft2/starcraft2.py\", line 347, in reset\n    self._launch()\n",
+    "  File \"/home/zhangbei/pymarl2/ResQ/ResQ/src/smac/env/starcraft2/starcraft2.py\", line 330, in _launch\n    for row in vals], dtype=np.bool))\n",
+    "  File \"/home/zhangbei/miniconda3/envs/pymarl/lib/python3.8/site-packages/numpy/__init__.py\", line 305, in __getattr__\n    raise AttributeError(__former_attrs__[attr])\n",
+    "AttributeError: module 'numpy' has no attribute 'bool'.\n`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.\nThe aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:\n    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations\n"
+  ],
+  "heartbeat": "2025-11-27T09:13:47.863624",
+  "host": {
+    "ENV": {},
+    "cpu": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+    "gpus": {
+      "driver_version": "535.247.01",
+      "gpus": [
+        {
+          "model": "NVIDIA GeForce RTX 3090",
+          "persistence_mode": false,
+          "total_memory": 24576
+        },
+        {
+          "model": "NVIDIA GeForce RTX 3090",
+          "persistence_mode": false,
+          "total_memory": 24576
+        },
+        {
+          "model": "NVIDIA GeForce RTX 3090",
+          "persistence_mode": false,
+          "total_memory": 24576
+        },
+        {
+          "model": "NVIDIA GeForce RTX 3090",
+          "persistence_mode": false,
+          "total_memory": 24576
+        }
+      ]
+    },
+    "hostname": "XieLab3090",
+    "os": [
+      "Linux",
+      "Linux-5.15.0-139-generic-x86_64-with-glibc2.17"
+    ],
+    "python_version": "3.8.20"
+  },
+  "meta": {
+    "command": "my_main",
+    "options": {
+      "--beat_interval": null,
+      "--capture": null,
+      "--comment": null,
+      "--debug": false,
+      "--enforce_clean": false,
+      "--file_storage": null,
+      "--force": false,
+      "--help": false,
+      "--loglevel": null,
+      "--mongo_db": null,
+      "--name": null,
+      "--pdb": false,
+      "--print_config": false,
+      "--priority": null,
+      "--queue": false,
+      "--sql": null,
+      "--tiny_db": null,
+      "--unobserved": false,
+      "COMMAND": null,
+      "UPDATE": [
+        "env_args.map_name=8m_vs_9m",
+        "use_tensorboard=True",
+        "seed=79"
+      ],
+      "help": false,
+      "with": true
+    }
+  },
+  "resources": [],
+  "result": null,
+  "start_time": "2025-11-27T09:13:34.554031",
+  "status": "FAILED",
+  "stop_time": "2025-11-27T09:13:47.865211"
+}
