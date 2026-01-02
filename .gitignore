@@ -1,4 +1,5 @@
 results1/
+results/
 models/
 __pycache__/
 *.pth
