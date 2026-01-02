@@ -1,0 +1,148 @@
+[INFO 17:13:34] pymarl Running command 'my_main'
+[INFO 17:13:34] pymarl Started run with ID "1"
+[DEBUG 17:13:34] pymarl Starting Heartbeat
+[DEBUG 17:13:34] my_main Started
+[INFO 17:13:34] my_main Experiment Parameters:
+[INFO 17:13:34] my_main 
+
+{   'action_selector': 'epsilon_greedy',
+    'agent': 'rnn',
+    'agent_output_type': 'q',
+    'batch_size': 32,
+    'batch_size_run': 1,
+    'buffer_cpu_only': True,
+    'buffer_size': 5000,
+    'central_action_embed': 1,
+    'central_agent': 'central_rnn',
+    'central_loss': 1,
+    'central_mac': 'basic_central_mac',
+    'central_mixer': 'ff',
+    'central_mixing_embed_dim': 128,
+    'central_rnn_hidden_dim': 64,
+    'checkpoint_path': '',
+    'condition': 'max_action',
+    'condition_loss': 'mse',
+    'condition_loss_delta': 0.001,
+    'critic_lr': 0.0005,
+    'double_q': True,
+    'env': 'sc2',
+    'env_args': {   'continuing_episode': False,
+                    'debug': False,
+                    'difficulty': '7',
+                    'game_version': None,
+                    'heuristic_ai': False,
+                    'heuristic_rest': False,
+                    'map_name': '8m_vs_9m',
+                    'move_amount': 2,
+                    'obs_all_health': True,
+                    'obs_instead_of_state': False,
+                    'obs_last_action': False,
+                    'obs_own_health': True,
+                    'obs_pathing_grid': False,
+                    'obs_terrain_height': False,
+                    'obs_timestep_number': False,
+                    'replay_dir': '',
+                    'replay_prefix': '',
+                    'reward_death_value': 10,
+                    'reward_defeat': 0,
+                    'reward_negative_scale': 0.5,
+                    'reward_only_positive': True,
+                    'reward_scale': True,
+                    'reward_scale_rate': 20,
+                    'reward_sparse': False,
+                    'reward_win': 200,
+                    'seed': 79,
+                    'state_last_action': True,
+                    'state_timestep_number': False,
+                    'step_mul': 8},
+    'epsilon_anneal_time': 100000,
+    'epsilon_finish': 0.05,
+    'epsilon_start': 1.0,
+    'evaluate': False,
+    'gamma': 0.99,
+    'grad_norm_clip': 10,
+    'hypernet_embed': 64,
+    'hypernet_layers': 2,
+    'hysteretic_qmix': False,
+    'label': 'default_label',
+    'learner': 'restq_learner_central',
+    'learner_log_interval': 10000,
+    'load_step': 0,
+    'local_results_path': 'results',
+    'log_interval': 10000,
+    'lr': 0.001,
+    'mac': 'basic_mac',
+    'max_second_gap': 0,
+    'mixer': 'qmix',
+    'mixing_embed_dim': 32,
+    'name': 'ResQ',
+    'noopt_loss': 1,
+    'obs_agent_id': True,
+    'obs_last_action': True,
+    'optim_alpha': 0.99,
+    'optim_eps': 1e-05,
+    'qmix_loss': 1,
+    'repeat_id': 1,
+    'residual_negative_abs': True,
+    'resq_version': 'v3',
+    'rnn_hidden_dim': 64,
+    'run': 'default',
+    'runner': 'episode',
+    'runner_log_interval': 10000,
+    'save_model': False,
+    'save_model_interval': 2000000,
+    'save_replay': False,
+    'seed': 79,
+    't_max': 1050000,
+    'target_update_interval': 200,
+    'td_lambda': 0.6,
+    'test_greedy': True,
+    'test_interval': 10000,
+    'test_nepisode': 32,
+    'use_cuda': True,
+    'use_tensorboard': True}
+
+Mixer Size: 
+214.085K
+[INFO 17:13:36] my_main Beginning training for 1050000 timesteps
+[INFO 17:13:36] absl Launching SC2: /home/zhangbei/StarCraftII/Versions/Base75689/SC2_x64 -listen 127.0.0.1 -port 38267 -dataDir /home/zhangbei/StarCraftII/ -tempDir /tmp/sc-qs965l1l/ -eglpath libEGL.so
+[INFO 17:13:37] absl Connecting to: ws://127.0.0.1:38267/sc2api, attempt: 0, running: True
+Version: B75689 (SC2.4.10)
+Build: Aug 12 2019 17:16:57
+Command Line: '"/home/zhangbei/StarCraftII/Versions/Base75689/SC2_x64" -listen 127.0.0.1 -port 38267 -dataDir /home/zhangbei/StarCraftII/ -tempDir /tmp/sc-qs965l1l/ -eglpath libEGL.so'
+Starting up...
+Startup Phase 1 complete
+[INFO 17:13:38] absl Connecting to: ws://127.0.0.1:38267/sc2api, attempt: 1, running: True
+Startup Phase 2 complete
+Attempting to initialize EGL from file libEGL.so ...
+Successfully loaded EGL library!
+[INFO 17:13:39] absl Connecting to: ws://127.0.0.1:38267/sc2api, attempt: 2, running: True
+Successfully initialized display on device idx: 0, EGL version: 1.5
+
+[INFO 17:13:40] absl Connecting to: ws://127.0.0.1:38267/sc2api, attempt: 3, running: True
+Running CGLSimpleDevice::HALInit...
+Calling glGetString: 0x7fb37c0c55e0
+Version: 4.6.0 NVIDIA 535.247.01
+Vendor: NVIDIA Corporation
+Renderer: NVIDIA GeForce RTX 3090/PCIe/SSE2
+OpenGL initialized!
+[INFO 17:13:41] absl Connecting to: ws://127.0.0.1:38267/sc2api, attempt: 4, running: True
+Listening on: 127.0.0.1:38267
+Startup Phase 3 complete. Ready for commands.
+[INFO 17:13:42] absl Connecting to: ws://127.0.0.1:38267/sc2api, attempt: 5, running: True
+ConnectHandler: Request from 127.0.0.1:58178 accepted
+ReadyHandler: 127.0.0.1:58178 ready
+Requesting to join a single player game
+Configuring interface options
+Configure: raw interface enabled
+Configure: feature layer interface disabled
+Configure: score interface disabled
+Configure: render interface disabled
+Launching next game.
+Next launch phase started: 2
+Next launch phase started: 3
+Next launch phase started: 4
+Next launch phase started: 5
+Next launch phase started: 6
+Next launch phase started: 7
+Next launch phase started: 8
