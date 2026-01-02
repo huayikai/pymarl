@@ -90,14 +90,13 @@ class DVDMixer(nn.Module):
 
         # 组件 1: GAT
         self.gat = MultiHeadGAT(self.rnn_hidden_dim, self.gat_dim, self.n_heads)
-
-        # [修正 1] 移除残差连接的维度，回归纯粹的 DVD 逻辑
-        # 这样能保证 GAT 真正起到 "Proxy Confounder" 的过滤作用 
-        # self.combined_dim = self.gat_dim + self.rnn_hidden_dim 
+ 
         self.combined_dim = self.gat_dim 
 
+        self.input_state_dim = self.state_dim + 1
+
         # 组件 2: 状态超网络 (生成 W1)
-        self.hyper_w_1_state = nn.Linear(self.state_dim, self.n_heads * self.embed_dim * self.combined_dim)
+        self.hyper_w_1_state = nn.Linear(self.input_state_dim, self.n_heads * self.embed_dim * self.combined_dim)
         self.hyper_b_1 = nn.Linear(self.state_dim, self.embed_dim)
 
         # 组件 3: 第二层混合 (W_final)
@@ -139,11 +138,21 @@ class DVDMixer(nn.Module):
                 # 如果是 Sequential，处理最后一层
                 self.hyper_w_final[-1].weight.data.mul_(0.01)
 
-    def forward(self, agent_qs, states, hidden_states):
+    def forward(self, agent_qs, states, hidden_states, uncertainty=None):
         bs = agent_qs.size(0) 
         states = states.reshape(-1, self.state_dim)
         agent_qs = agent_qs.reshape(-1, 1, self.n_agents)
         hidden_states = hidden_states.reshape(-1, self.n_agents, self.rnn_hidden_dim)
+
+        if uncertainty is not None:
+            # uncertainty shape: (bs * T, 1)
+            uncertainty = uncertainty.reshape(-1, 1)
+            # 拼接到 state 后面
+            states_augmented = th.cat([states, uncertainty], dim=1)
+        else:
+            # 如果没有提供 (比如 evaluation 时)，用 0 填充
+            zero_uncertainty = th.zeros(states.size(0), 1).to(states.device)
+            states_augmented = th.cat([states, zero_uncertainty], dim=1)
 
         # Step 1: GAT 采样
         graphs_out = self.gat(hidden_states) # (bs*T, heads, agents, gat_dim)
@@ -154,7 +163,7 @@ class DVDMixer(nn.Module):
         graphs_final = graphs_out
 
         # Step 2: 计算 W1
-        w1_state = self.hyper_w_1_state(states)
+        w1_state = self.hyper_w_1_state(states_augmented)
         w1_state = w1_state.view(-1, self.n_heads, self.embed_dim, self.combined_dim)
         
         graphs_T = graphs_final.permute(0, 1, 3, 2)
