@@ -138,6 +138,20 @@ class DVDMixer(nn.Module):
                 # 如果是 Sequential，处理最后一层
                 self.hyper_w_final[-1].weight.data.mul_(0.01)
 
+        # 0初始化RND门控的权重
+        with th.no_grad():
+            self.hyper_w_1_state.weight.data[:, -1].fill_(0.0)
+            
+            # 如果你给 W_final 也加了 uncertainty，也要处理
+            # (假设你之前的代码 W_final 也接收了 augmented state)
+            if isinstance(self.hyper_w_final, nn.Linear):
+                 if self.hyper_w_final.in_features == self.input_state_dim:
+                    self.hyper_w_final.weight.data[:, -1].fill_(0.0)
+            elif isinstance(self.hyper_w_final, nn.Sequential):
+                first_layer = self.hyper_w_final[0]
+                if isinstance(first_layer, nn.Linear) and first_layer.in_features == self.input_state_dim:
+                    first_layer.weight.data[:, -1].fill_(0.0)
+
     def forward(self, agent_qs, states, hidden_states, uncertainty=None):
         bs = agent_qs.size(0) 
         states = states.reshape(-1, self.state_dim)
