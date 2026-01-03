@@ -168,27 +168,29 @@ class DVDNQLearner:
             
             # 4. 全局归一化 (Normalize ALL errors)
             # 我们需要把 t=0 的 error 也归一化，因为它是 Mixer 的输入
-            if self.rnd_ms.var < 1e-6:
-                all_rnd_norm = th.zeros_like(all_rnd_error)
-            else:
-                all_rnd_norm = (all_rnd_error - self.rnd_ms.mean) / (self.rnd_ms.var**0.5 + 1e-6)
+
+            # 原代码，回导致return下降
+            # if self.rnd_ms.var < 1e-6:
+            #     all_rnd_norm = th.zeros_like(all_rnd_error)
+            # else:
+            #     all_rnd_norm = (all_rnd_error - self.rnd_ms.mean) / (self.rnd_ms.var**0.5 + 1e-6)
+            std = self.rnd_ms.var**0.5 + 1e-6
+            all_rnd_norm = all_rnd_error / std
             
-            # 5. [关键] 裁剪! 限制在 [-5, 5] 之间，防止数值爆炸
-            all_rnd_norm = th.clamp(all_rnd_norm, -5, 5)
+            # 5. 裁剪 (依然限制上限，防止个别极端值炸梯度，但下限设为 0)
+            all_rnd_norm = th.clamp(all_rnd_norm, 0, 5)
             
-            # 6. 填充 rnd_errors_tensor (传给 Mixer 的就是这个!)
-            # 此时里面的值是归一化且裁剪过的，非常安全
+            # 6. 填充 Mixer 输入 (Uncertainty Gate)
             T_all = all_rnd_norm.shape[1]
             rnd_errors_tensor[:, :T_all] = all_rnd_norm.detach()
 
-            # 7. 计算用于加在 Reward 里的部分
-            intrinsic_rewards_norm = all_rnd_norm[:, 1:].detach() # 取 t=1..T
+            # 7. 计算奖励加成
+            intrinsic_rewards_norm = all_rnd_norm[:, 1:].detach()
             min_len = min(rewards.shape[1], intrinsic_rewards_norm.shape[1])
             
-            # 只有当 beta > 0 时才修改 reward，但 Mixer 的输入始终保留
+            # 只有 beta > 0 才加奖励
             if current_rnd_beta > 1e-5:
                 rewards = rewards[:, :min_len] + current_rnd_beta * intrinsic_rewards_norm[:, :min_len]
-            
             # 记录日志
             intrinsic_rewards_mean = intrinsic_rewards_norm.mean().item()
 
