@@ -95,9 +95,6 @@ class DVDNQLearner:
         rnd_loss_item = 0
         intrinsic_rewards_mean = 0
 
-        # 统计rnd的error
-        rnd_errors_tensor = th.zeros(batch.batch_size, batch.max_seq_length, 1).to(self.device)
-
         '''
         之前的代码，rnd的奖励全程存在
         '''
@@ -154,10 +151,6 @@ class DVDNQLearner:
             
             # 1. 计算预测误差
             rnd_predict_error = self.rnd(state_inputs)
-
-            T_rnd = rnd_predict_error.shape[1]
-            rnd_errors_tensor[:, 1:1+T_rnd] = rnd_predict_error.detach()
-
             intrinsic_rewards = rnd_predict_error.detach()
 
             # 2. 更新统计量
@@ -272,18 +265,9 @@ class DVDNQLearner:
             # Target Mixer 前向传播
             # 如果是 DVD Mixer，需要传入 hidden states
             if self.args.mixer == "dvd":
+            # target hidden states 也要取 t=1 到 T
                 target_hs_next = whole_target_hidden_states[:, 1:1+target_len]
-                target_states_next = batch["state"][:, 1:1+target_len]
-                
-                # 获取对应的不确定性 (t+1 时刻)
-                target_uncertainty = rnd_errors_tensor[:, 1:1+target_len]
-                
-                target_q_tot = self.target_mixer(
-                    target_chosen_qvals, 
-                    target_states_next, 
-                    target_hs_next,
-                    uncertainty=target_uncertainty # 传入不确定性
-                )
+                target_q_tot = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:1+target_len], target_hs_next)
             else:
                 target_q_tot = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:1+target_len])
 
@@ -305,22 +289,10 @@ class DVDNQLearner:
 
         # 5. Online Mixer 前向传播
         if self.args.mixer == "dvd":
-            # --- [修改点] Online Mixer ---
-            # 获取对应的不确定性 (t=0 到 T-1，注意 rnd_errors_tensor 在 t=0 时是 0，这是合理的，初始状态没有预测误差或误差很高)
-            # 其实 rnd_errors_tensor[:, 0] 我们没算，默认为 0。
-            # 真正有意义的是 t=1 开始。为了对齐，我们可以简单地把 t=1 的误差错位给 t=0，或者就用 0。
-            # 更好的做法：state_inputs 算的是 batch["state"][:, 1:] (即 s_1...s_T)
-            # 对应的是 s_0 的 next_state。
-            # 这里我们直接取对应时间步的 tensor 即可
-            online_uncertainty = rnd_errors_tensor[:, :T_min] 
-
-            online_q_tot = self.mixer(
-                chosen_action_qvals, 
-                batch["state"][:, :T_min], 
-                hidden_states_main,
-                uncertainty=online_uncertainty # 传入不确定性
-            )
+            # DVD: 传入 Q, State, Hidden States
+            online_q_tot = self.mixer(chosen_action_qvals, batch["state"][:, :T_min], hidden_states_main)
         else:
+            # Normal: 传入 Q, State
             online_q_tot = self.mixer(chosen_action_qvals, batch["state"][:, :T_min])
 
         # 6. 计算 Loss (TD Loss + Causal Loss)
