@@ -8,7 +8,7 @@ from modules.mixers.dvd import DVDMixer
 from modules.exploration.rnd import RNDModel
 
 class RunningMeanStd:
-    # 不需要保存全部的数据，就可以通过一个新的数据来计算整体的均值和方差
+    # 动态统计均值和方差，用于RND误差的归一化
     def __init__(self, shape=()):
         self.mean = 0.0
         self.var = 1.0
@@ -20,7 +20,6 @@ class RunningMeanStd:
         batch_count = x.shape[0]
         
         delta = batch_mean - self.mean
-        # 防止除0
         tot_count = self.count + batch_count
         
         new_mean = self.mean + delta * batch_count / tot_count
@@ -33,10 +32,8 @@ class RunningMeanStd:
         self.var = new_var
         self.count = tot_count
 
-# TD(lambda) 计算函数
-# 计算的是td-error的目标
-# 这个其实/home/zhangbei/pymarl2/src/utils/rl_utils.py里面有
 def build_td_lambda_targets(rewards, terminated, mask, target_qvals, n_agents, gamma, td_lambda):
+    # TD(lambda) 目标计算
     ret = target_qvals.new_zeros(*target_qvals.shape)
     ret[:, -1] = target_qvals[:, -1] * (1 - terminated[:, -1])
     for t in range(ret.shape[1] - 2, -1, -1):
@@ -53,15 +50,13 @@ class DVDNQLearner:
         
         self.params = list(mac.parameters())
         self.last_target_update_episode = 0
-
-        # 软更新的参数
         self.target_update_tau = 0.01
 
-        # Mixer 初始化
+        # 初始化 Mixer
         if args.mixer == "dvd":
-            self.mixer = DVDMixer(args) # DVD 结构
+            self.mixer = DVDMixer(args)
         elif args.mixer == "qmix_without_abs":
-            self.mixer = Mixer(args)# Unconstrained Mixer
+            self.mixer = Mixer(args)
         else:
             raise ValueError(f"Mixer {args.mixer} not supported in DVDNQLearner")
 
@@ -77,12 +72,18 @@ class DVDNQLearner:
         self.target_mac = copy.deepcopy(mac)
         self.log_stats_t = -self.args.learner_log_interval - 1
 
-        # RND 探索模块
+        # --- RND 模块初始化 ---
         self.use_rnd = getattr(args, "use_rnd", False)
         if self.use_rnd:
             self.rnd = RNDModel(args).to(self.device)
             self.rnd_optimizer = Adam(self.rnd.predictor.parameters(), lr=getattr(args, "rnd_lr", 5e-4))
             self.rnd_ms = RunningMeanStd()
+            
+            # [双重门控参数]
+            # 1. 时间门控：预热步数，在此之前不给予内在奖励，防止初始 Loss 爆炸
+            self.rnd_warmup_steps = getattr(args, "rnd_warmup_steps", 50000)
+            # 2. 信号门控：阈值，只有归一化后的误差大于 mean + k*std 才视为有效探索
+            self.rnd_gate_threshold = getattr(args, "rnd_gate_threshold", 1.0) 
 
     def train(self, batch: EpisodeBatch, t_env: int, episode_num: int):
         rewards = batch["reward"][:, :-1]
@@ -91,123 +92,118 @@ class DVDNQLearner:
         mask = batch["filled"][:, :-1].float()
         mask[:, 1:] = mask[:, 1:] * (1 - terminated[:, :-1])
 
-        # 统计量
+        # 初始化统计变量
         rnd_loss_item = 0
         intrinsic_rewards_mean = 0
+        
+        # 初始化 uncertainty 容器 (用于传给 Mixer 的超网络)
+        # 默认全为0，如果不使用 RND 或者 RND 处于后期衰减关闭状态
+        all_uncertainty_norm = th.zeros(batch.batch_size, batch.max_seq_length, 1).to(self.device)
 
-        '''
-        之前的代码，rnd的奖励全程存在
-        '''
-        # if self.use_rnd:
-        #     state_inputs = batch["state"][:, 1:]
-        #     # 1. 计算预测误差 (batch, T, 1)
-        #     rnd_predict_error = self.rnd(state_inputs)
-        #     intrinsic_rewards = rnd_predict_error.detach()
-
-        #     # 2. 更新统计量并归一化
-        #     mask_rnd = mask[:, :intrinsic_rewards.shape[1]]
-        #     valid_rewards = intrinsic_rewards[mask_rnd == 1]
-            
-        #     if valid_rewards.numel() > 0:
-        #         self.rnd_ms.update(valid_rewards.cpu().numpy())
-            
-        #     # 使用 Running Mean/Std 归一化
-        #     # 这一步非常关键，它保证了即使原始 error 变小，归一化后的 reward 分布依然稳定
-        #     intrinsic_rewards_norm = (intrinsic_rewards - self.rnd_ms.mean) / (self.rnd_ms.var**0.5 + 1e-8)
-            
-        #     # 裁剪，防止离群值破坏 TD update
-        #     intrinsic_rewards_norm = th.clamp(intrinsic_rewards_norm, -5, 5)
-
-        #     # 3. 加权求和
-        #     # 使用归一化后的奖励，而不是原始奖励
-        #     min_len = min(rewards.shape[1], intrinsic_rewards.shape[1])
-        #     rewards = rewards[:, :min_len] + self.args.rnd_beta * intrinsic_rewards_norm[:, :min_len]
-
-        #     # 记录用于 Tensorboard
-        #     intrinsic_rewards_mean = intrinsic_rewards_norm.mean().item()
-
-        #     # RND 更新
-        #     rnd_loss = (rnd_predict_error[:, :min_len] * mask[:, :min_len]).sum() / mask[:, :min_len].sum()
-        #     self.rnd_optimizer.zero_grad()
-        #     rnd_loss.backward()
-        #     self.rnd_optimizer.step()
-        #     rnd_loss_item = rnd_loss.item()
-
-        '''
-        添加了动态的rnd机制
-        '''
-        # 计算当前的 rnd_beta (线性衰减逻辑)
-        # 建议设置衰减周期，例如在 6M 步时衰减到 0
+        # RND Beta 线性衰减
         rnd_decay_steps = 6000000 
         if t_env < rnd_decay_steps:
             progress = t_env / rnd_decay_steps
             current_rnd_beta = self.args.rnd_beta * (1.0 - progress)
         else:
-            current_rnd_beta = 0.0  # 后期彻底关闭内在奖励
+            current_rnd_beta = 0.0
 
-        # 只有在需要时才计算 RND
-        if self.use_rnd and current_rnd_beta > 1e-5:
-            state_inputs = batch["state"][:, 1:]
+        # ==============================================================================
+        # Part 1: RND 处理 (计算误差、归一化、双重门控、生成 Mixer 输入)
+        # ==============================================================================
+        if self.use_rnd:
+            all_states = batch["state"]
             
-            # 1. 计算预测误差
-            rnd_predict_error = self.rnd(state_inputs)
-            intrinsic_rewards = rnd_predict_error.detach()
+            # 1. 计算原始误差 (Raw Error)
+            # 重要：这里必须 detach，因为我们不需要 Mixer 的梯度反传回 RND 网络
+            # RND 网络有自己的优化器
+            all_rnd_error_raw = self.rnd(all_states).detach() 
 
-            # 2. 更新统计量
-            mask_rnd = mask[:, :intrinsic_rewards.shape[1]]
-            valid_rewards = intrinsic_rewards[mask_rnd == 1]
+            # 2. 更新统计量 (Running Mean/Std)
+            # 只使用有效的时间步 (mask=1) 来更新统计，避免 padding 数据的干扰
+            valid_mask = batch["filled"]
+            valid_errors = all_rnd_error_raw[valid_mask == 1]
+            if valid_errors.numel() > 0:
+                self.rnd_ms.update(valid_errors.cpu().numpy())
+
+            # 3. 全局归一化 (Global Normalization) -> 用于 Mixer 输入
+            # 解决了输入非平稳性问题：无论训练处于什么阶段，输入给 Mixer 的特征分布都接近 N(0,1)
+            std = self.rnd_ms.var**0.5 + 1e-6
+            all_uncertainty_norm = (all_rnd_error_raw - self.rnd_ms.mean) / std
             
-            if valid_rewards.numel() > 0:
-                self.rnd_ms.update(valid_rewards.cpu().numpy())
+            # 裁剪防止极值破坏超网络稳定性
+            all_uncertainty_norm = th.clamp(all_uncertainty_norm, -5, 5)
+
+            # 4. 计算内在奖励 (用于 Q-Learning)
+            if current_rnd_beta > 1e-5:
+                # 取出 t=0 到 T-1 的部分作为当前步的奖励
+                intrinsic_rewards = all_uncertainty_norm[:, :-1]
+
+                # [门控机制 1: 信号门控] 
+                # 过滤掉底噪，只奖励显著新颖的状态 (> mean + 1.0 * std)
+                # 这能有效防止 "Noisy TV" 问题（智能体在普通状态刷微小误差）
+                gate_mask = (intrinsic_rewards > self.rnd_gate_threshold).float()
+                intrinsic_rewards_gated = intrinsic_rewards * gate_mask
+
+                # [门控机制 2: 时间门控/预热]
+                # 在 Predictor 未收敛前，不给 Agent 加奖励，防止初始 Q 值爆炸
+                if t_env < self.rnd_warmup_steps:
+                    intrinsic_rewards_final = th.zeros_like(intrinsic_rewards_gated)
+                else:
+                    intrinsic_rewards_final = intrinsic_rewards_gated
+
+                # 叠加到外在奖励
+                # 注意维度对齐
+                min_len = min(rewards.shape[1], intrinsic_rewards_final.shape[1])
+                rewards = rewards[:, :min_len] + current_rnd_beta * intrinsic_rewards_final[:, :min_len]
+                
+                intrinsic_rewards_mean = intrinsic_rewards_final.mean().item()
+
+            # 5. 训练 RND 网络 (Predictor)
+            # 重新前向传播以获取带梯度的 Graph
+            # 这里不需要 gate 或 warmup，Predictor 需要一直训练以适应环境
+            pred_error_with_grad = self.rnd(all_states) 
+            loss_input = pred_error_with_grad[:, :-1] # 对齐 mask
             
-            # 3. 归一化 (带方差保护)
-            if self.rnd_ms.var < 1e-6:
-                intrinsic_rewards_norm = th.zeros_like(intrinsic_rewards)
-            else:
-                intrinsic_rewards_norm = (intrinsic_rewards - self.rnd_ms.mean) / (self.rnd_ms.var**0.5 + 1e-6)
+            min_len_loss = min(loss_input.shape[1], mask.shape[1])
+            mask_loss = mask[:, :min_len_loss]
             
-            # 裁剪防止离群值
-            intrinsic_rewards_norm = th.clamp(intrinsic_rewards_norm, -5, 5)
-
-            # 4. 更新 rewards
-            min_len = min(rewards.shape[1], intrinsic_rewards.shape[1])
-            # 注意：这里我们修改的是 rewards 变量，它随后会被传入 build_td_lambda_targets
-            rewards = rewards[:, :min_len] + current_rnd_beta * intrinsic_rewards_norm[:, :min_len]
-
-            # 记录日志
-            intrinsic_rewards_mean = intrinsic_rewards_norm.mean().item()
-
-            # 5. 更新 RND 网络
-            # 计算 loss 时要用 mask 遮盖
-            rnd_loss = (rnd_predict_error[:, :min_len] * mask[:, :min_len]).sum() / mask[:, :min_len].sum()
+            rnd_loss = (loss_input[:, :min_len_loss] * mask_loss).sum() / mask_loss.sum()
+            
             self.rnd_optimizer.zero_grad()
             rnd_loss.backward()
+            # 梯度裁剪，保护 RND 网络
+            th.nn.utils.clip_grad_norm_(self.rnd.predictor.parameters(), 1.0)
             self.rnd_optimizer.step()
             rnd_loss_item = rnd_loss.item()
 
-        # 2. Online Network 前向传播 (收集 Hidden States 用于 DVD)
+        # ==============================================================================
+        # Part 2: Agent (MAC) 前向传播
+        # ==============================================================================
         self.mac.agent.train()
         mac_out = []
-        hidden_states_list = [] # 用于存储 hidden states
-        self.mac.init_hidden(batch.batch_size) # 初始化隐藏层
+        hidden_states_list = [] 
+        self.mac.init_hidden(batch.batch_size)
 
         for t in range(batch.max_seq_length):
             agent_outs = self.mac.forward(batch, t=t)
             mac_out.append(agent_outs)
-            # 收集 hidden states: (batch, n_agents, rnn_dim)
+            # 收集 Hidden States (batch, n_agents, rnn_dim) 用于 DVDMixer 的 GAT
             cur_h = self.mac.hidden_states.view(batch.batch_size, self.args.n_agents, -1).clone()
             hidden_states_list.append(cur_h)
 
         mac_out = th.stack(mac_out, dim=1)
-        whole_hidden_states = th.stack(hidden_states_list, dim=1) # (batch, T_max, n_agents, rnn_dim)
+        whole_hidden_states = th.stack(hidden_states_list, dim=1)
         
-        # 截取 t=0 到 T-1 的 hidden states 用于 online mixer
+        # 截取 t=0 到 T-1 的 hidden states
         hidden_states_main = whole_hidden_states[:, :-1]
-
+        
         # 获取选定动作的 Q 值
         chosen_action_qvals = th.gather(mac_out[:, :-1], dim=3, index=actions).squeeze(3)
 
-        # 3. Target Network 前向传播
+        # ==============================================================================
+        # Part 3: Target Network & Target Mixer
+        # ==============================================================================
         with th.no_grad():
             self.target_mac.agent.train()
             target_mac_out = []
@@ -217,107 +213,90 @@ class DVDNQLearner:
             for t in range(batch.max_seq_length):
                 target_agent_outs = self.target_mac.forward(batch, t=t)
                 target_mac_out.append(target_agent_outs)
-                # 收集 Target Hidden States
                 cur_target_h = self.target_mac.hidden_states.view(batch.batch_size, self.args.n_agents, -1).clone()
                 target_hidden_states_list.append(cur_target_h)
 
             target_mac_out = th.stack(target_mac_out, dim=1)
             whole_target_hidden_states = th.stack(target_hidden_states_list, dim=1)
 
-            # SARSA Target 计算
-            # 1. 获取 Target Q-values (t=1 到 T)
+            # SARSA Target 计算逻辑
             target_qvals_next = target_mac_out[:, 1:]
-            # 2. 获取实际执行的 Next Actions (来自 Replay Buffer)
-            # batch["actions"] 包含了历史轨迹中真实执行的动作
-            # 我们需要的是 t+1 时刻的动作
             next_actions = batch["actions"][:, 1:]
-            # 3. 安全对齐长度
-            # 确保 Q值 和 动作 的时间维度长度一致
+            
+            # 对齐长度
             target_len = min(target_qvals_next.shape[1], next_actions.shape[1])
             target_qvals_next = target_qvals_next[:, :target_len]
             next_actions = next_actions[:, :target_len]
-            # 4. 根据实际动作获取 Target Q 值
-            # 不再使用 .max(dim=3)，而是使用 .gather
-            # y = r + gamma * Q_target(s', a'_actual)
+            
+            # 获取 Q(s', a')
             target_chosen_qvals = th.gather(target_qvals_next, 3, next_actions).squeeze(3)
 
-            # # double_DQN 计算
-            # # 1. 准备 Next Q-values (Online Network)
-            # mac_out_next = mac_out[:, 1:].clone().detach()
-            # # 2. 准备 Next Available Actions
-            # # 必须使用 avail_actions 来屏蔽动作，而不是 mask(filled)
-            # avail_actions_next = batch["avail_actions"][:, 1:]
-            # # 3. 安全对齐长度
-            # target_len = min(mac_out_next.shape[1], avail_actions_next.shape[1])
-            # mac_out_next = mac_out_next[:, :target_len]
-            # avail_actions_next = avail_actions_next[:, :target_len]
-            # # 4. 屏蔽非法动作
-            # mac_out_next[avail_actions_next == 0] = -9999999
-            # # 5. 选动作 (Greedy Action)
-            # cur_next_actions = mac_out_next.max(dim=3, keepdim=True)[1]
-            # # 6. 准备 Target Q-values (Target Network)
-            # target_qvals_next = target_mac_out[:, 1:]
-            # # 同样对齐长度
-            # target_qvals_next = target_qvals_next[:, :target_len] 
-            # # 7. 根据选出的动作获取 Q 值
-            # target_chosen_qvals = th.gather(target_qvals_next, 3, cur_next_actions).squeeze(3)
-
-            # Target Mixer 前向传播
-            # 如果是 DVD Mixer，需要传入 hidden states
+            # --- Target Mixer 调用 ---
             if self.args.mixer == "dvd":
-            # target hidden states 也要取 t=1 到 T
                 target_hs_next = whole_target_hidden_states[:, 1:1+target_len]
-                target_q_tot = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:1+target_len], target_hs_next)
+                target_states_next = batch["state"][:, 1:1+target_len]
+                
+                # [Mixer 注入点] 获取 t+1 时刻的归一化不确定性
+                # 这里的 all_uncertainty_norm 是归一化且稳定的，适合做超网络输入
+                target_uncertainty_input = all_uncertainty_norm[:, 1:1+target_len]
+                
+                target_q_tot = self.target_mixer(
+                    target_chosen_qvals, 
+                    target_states_next, 
+                    target_hs_next,
+                    uncertainty=target_uncertainty_input 
+                )
             else:
                 target_q_tot = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:1+target_len])
 
-        # 4. TD(lambda) Targets
-        # 确保 Online Q_tot 计算所需的数据长度一致
+        # ==============================================================================
+        # Part 4: Loss 计算 & Update
+        # ==============================================================================
+        
+        # 数据对齐截断
         T_min = min(chosen_action_qvals.shape[1], target_q_tot.shape[1], hidden_states_main.shape[1])
-
-        # 截断数据
         chosen_action_qvals = chosen_action_qvals[:, :T_min]
         hidden_states_main = hidden_states_main[:, :T_min]
         target_q_tot = target_q_tot[:, :T_min]
-        rewards = rewards[:, :T_min]
+        rewards = rewards[:, :T_min] # 这里使用的是包含了 RND 奖励的 rewards
         mask = mask[:, :T_min]
         terminated = terminated[:, :T_min]
 
-        # 计算 TD Targets
+        # 计算 TD(lambda) Targets
         targets = build_td_lambda_targets(rewards, terminated, mask, target_q_tot, 
                                              self.args.n_agents, self.args.gamma, self.args.td_lambda)
 
-        # 5. Online Mixer 前向传播
+        # --- Online Mixer 调用 ---
         if self.args.mixer == "dvd":
-            # DVD: 传入 Q, State, Hidden States
-            online_q_tot = self.mixer(chosen_action_qvals, batch["state"][:, :T_min], hidden_states_main)
+            # [Mixer 注入点] 获取 t=0 到 T-1 的归一化不确定性
+            online_uncertainty_input = all_uncertainty_norm[:, :T_min]
+            
+            online_q_tot = self.mixer(
+                chosen_action_qvals, 
+                batch["state"][:, :T_min], 
+                hidden_states_main,
+                uncertainty=online_uncertainty_input
+            )
         else:
-            # Normal: 传入 Q, State
             online_q_tot = self.mixer(chosen_action_qvals, batch["state"][:, :T_min])
 
-        # 6. 计算 Loss (TD Loss + Causal Loss)
+        # TD Loss
         td_error = (online_q_tot - targets.detach())
         masked_td_error = mask * td_error
         loss_td = (masked_td_error ** 2).sum() / mask.sum()
 
         total_loss = loss_td
 
-        # 7. 反向传播与更新
+        # 反向传播
         self.optimiser.zero_grad()
         total_loss.backward()
         grad_norm = th.nn.utils.clip_grad_norm_(self.params, self.args.grad_norm_clip)
         self.optimiser.step()
 
-        # 下面这个是硬更新
-        # 更新 Target Network
-        # if (episode_num - self.last_target_update_episode) / self.args.target_update_interval >= 1.0:
-        #     self._update_targets()
-        #     self.last_target_update_episode = episode_num
-
-        # 每一步进行软更新
+        # 软更新
         self._update_targets_soft()
 
-        # 8. 日志记录
+        # 日志
         if t_env - self.log_stats_t >= self.args.learner_log_interval:
             self.logger.log_stat("loss_td", loss_td.item(), t_env)
             self.logger.log_stat("grad_norm", grad_norm, t_env)
@@ -326,8 +305,9 @@ class DVDNQLearner:
             self.logger.log_stat("target_mean", (targets * mask).sum().item()/(mask.sum().item()), t_env)
 
             if self.use_rnd:
-                            self.logger.log_stat("rnd_loss", rnd_loss_item, t_env)
-                            self.logger.log_stat("intrinsic_rewards_mean", intrinsic_rewards_mean, t_env)
+                self.logger.log_stat("rnd_loss", rnd_loss_item, t_env)
+                self.logger.log_stat("intrinsic_rewards_mean", intrinsic_rewards_mean, t_env)
+                self.logger.log_stat("rnd_beta", current_rnd_beta, t_env)
                             
             self.log_stats_t = t_env
 
@@ -340,7 +320,6 @@ class DVDNQLearner:
         self.logger.console_logger.info("Updated target network")
 
     def _update_targets_soft(self):
-        # 对 Mac (Agent) 和 Mixer 同时进行软更新
         for target_param, param in zip(self.target_mac.parameters(), self.mac.parameters()):
             target_param.data.copy_(
                 target_param.data * (1.0 - self.target_update_tau) + param.data * self.target_update_tau
