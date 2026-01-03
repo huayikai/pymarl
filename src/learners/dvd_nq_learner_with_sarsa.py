@@ -146,44 +146,54 @@ class DVDNQLearner:
             progress = t_env / rnd_decay_steps
             current_rnd_beta = self.args.rnd_beta * (1.0 - progress)
         else:
-            current_rnd_beta = 0.0  # 后期彻底关闭内在奖励
+            current_rnd_beta = 0.0
 
-        # 只有在需要时才计算 RND
-        if self.use_rnd and current_rnd_beta > 1e-5:
+        # 只要开启了 use_rnd，我们就计算它，用于传给 Mixer
+        if self.use_rnd:
+            # 1. 计算所有时刻的 RND Error (包含 t=0)
+            # 使用 batch["state"] (batch, T+1, state_dim)
             all_states = batch["state"]
-            all_rnd_error = self.rnd(all_states)
+            all_rnd_error = self.rnd(all_states) # (batch, T+1, 1)
 
-            T_all = all_rnd_error.shape[1]
-            rnd_errors_tensor[:, :T_all] = all_rnd_error.detach()
+            # 2. 这里的 intrinsic_rewards 是用于加在 extrinsic reward 上的
+            # 通常取 t=1 到 T (对应动作 a_0 到 a_{T-1} 产生的后果)
+            raw_intrinsic_rewards = all_rnd_error[:, 1:].detach()
 
-            intrinsic_rewards = all_rnd_error[:, 1:].detach()
-
-            # 2. 更新统计量
-            mask_rnd = mask[:, :intrinsic_rewards.shape[1]]
-            valid_rewards = intrinsic_rewards[mask_rnd == 1]
-            
+            # 3. 更新统计量 (Running Mean Std)
+            # 这一步至关重要！它保证了输入给 Mixer 的值是稳定的
+            mask_rnd = mask[:, :raw_intrinsic_rewards.shape[1]]
+            valid_rewards = raw_intrinsic_rewards[mask_rnd == 1]
             if valid_rewards.numel() > 0:
                 self.rnd_ms.update(valid_rewards.cpu().numpy())
             
-            # 3. 归一化 (带方差保护)
+            # 4. 全局归一化 (Normalize ALL errors)
+            # 我们需要把 t=0 的 error 也归一化，因为它是 Mixer 的输入
             if self.rnd_ms.var < 1e-6:
-                intrinsic_rewards_norm = th.zeros_like(intrinsic_rewards)
+                all_rnd_norm = th.zeros_like(all_rnd_error)
             else:
-                intrinsic_rewards_norm = (intrinsic_rewards - self.rnd_ms.mean) / (self.rnd_ms.var**0.5 + 1e-6)
+                all_rnd_norm = (all_rnd_error - self.rnd_ms.mean) / (self.rnd_ms.var**0.5 + 1e-6)
             
-            # 裁剪防止离群值
-            intrinsic_rewards_norm = th.clamp(intrinsic_rewards_norm, -5, 5)
+            # 5. [关键] 裁剪! 限制在 [-5, 5] 之间，防止数值爆炸
+            all_rnd_norm = th.clamp(all_rnd_norm, -5, 5)
+            
+            # 6. 填充 rnd_errors_tensor (传给 Mixer 的就是这个!)
+            # 此时里面的值是归一化且裁剪过的，非常安全
+            T_all = all_rnd_norm.shape[1]
+            rnd_errors_tensor[:, :T_all] = all_rnd_norm.detach()
 
-            # 4. 更新 rewards
-            min_len = min(rewards.shape[1], intrinsic_rewards.shape[1])
-            # 注意：这里我们修改的是 rewards 变量，它随后会被传入 build_td_lambda_targets
-            rewards = rewards[:, :min_len] + current_rnd_beta * intrinsic_rewards_norm[:, :min_len]
-
+            # 7. 计算用于加在 Reward 里的部分
+            intrinsic_rewards_norm = all_rnd_norm[:, 1:].detach() # 取 t=1..T
+            min_len = min(rewards.shape[1], intrinsic_rewards_norm.shape[1])
+            
+            # 只有当 beta > 0 时才修改 reward，但 Mixer 的输入始终保留
+            if current_rnd_beta > 1e-5:
+                rewards = rewards[:, :min_len] + current_rnd_beta * intrinsic_rewards_norm[:, :min_len]
+            
             # 记录日志
             intrinsic_rewards_mean = intrinsic_rewards_norm.mean().item()
 
+            # RND 网络更新 Loss (保持不变)
             rnd_predict_error_for_loss = all_rnd_error[:, 1:]
-            # 注意长度对齐
             min_len_loss = min(rnd_predict_error_for_loss.shape[1], mask.shape[1])
             rnd_loss = (rnd_predict_error_for_loss[:, :min_len_loss] * mask[:, :min_len_loss]).sum() / mask[:, :min_len_loss].sum()
             self.rnd_optimizer.zero_grad()

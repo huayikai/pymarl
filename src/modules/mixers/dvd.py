@@ -147,10 +147,9 @@ class DVDMixer(nn.Module):
         if uncertainty is not None:
             # uncertainty shape: (bs * T, 1)
             uncertainty = uncertainty.reshape(-1, 1)
-            # 拼接到 state 后面
             states_augmented = th.cat([states, uncertainty], dim=1)
         else:
-            # 如果没有提供 (比如 evaluation 时)，用 0 填充
+            # 必须用 0 填充，保持维度一致
             zero_uncertainty = th.zeros(states.size(0), 1).to(states.device)
             states_augmented = th.cat([states, zero_uncertainty], dim=1)
 
