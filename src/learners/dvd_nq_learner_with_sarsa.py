@@ -35,7 +35,6 @@ class RunningMeanStd:
 
 # TD(lambda) 计算函数
 # 计算的是td-error的目标
-# 这个其实/home/zhangbei/pymarl2/src/utils/rl_utils.py里面有
 def build_td_lambda_targets(rewards, terminated, mask, target_qvals, n_agents, gamma, td_lambda):
     ret = target_qvals.new_zeros(*target_qvals.shape)
     ret[:, -1] = target_qvals[:, -1] * (1 - terminated[:, -1])
@@ -59,9 +58,9 @@ class DVDNQLearner:
 
         # Mixer 初始化
         if args.mixer == "dvd":
-            self.mixer = DVDMixer(args) # DVD 结构
+            self.mixer = DVDMixer(args) # DVD 结构 (修改后的 VAE 版本)
         elif args.mixer == "qmix_without_abs":
-            self.mixer = Mixer(args)# Unconstrained Mixer
+            self.mixer = Mixer(args) # Unconstrained Mixer
         else:
             raise ValueError(f"Mixer {args.mixer} not supported in DVDNQLearner")
 
@@ -96,48 +95,9 @@ class DVDNQLearner:
         intrinsic_rewards_mean = 0
 
         '''
-        之前的代码，rnd的奖励全程存在
-        '''
-        # if self.use_rnd:
-        #     state_inputs = batch["state"][:, 1:]
-        #     # 1. 计算预测误差 (batch, T, 1)
-        #     rnd_predict_error = self.rnd(state_inputs)
-        #     intrinsic_rewards = rnd_predict_error.detach()
-
-        #     # 2. 更新统计量并归一化
-        #     mask_rnd = mask[:, :intrinsic_rewards.shape[1]]
-        #     valid_rewards = intrinsic_rewards[mask_rnd == 1]
-            
-        #     if valid_rewards.numel() > 0:
-        #         self.rnd_ms.update(valid_rewards.cpu().numpy())
-            
-        #     # 使用 Running Mean/Std 归一化
-        #     # 这一步非常关键，它保证了即使原始 error 变小，归一化后的 reward 分布依然稳定
-        #     intrinsic_rewards_norm = (intrinsic_rewards - self.rnd_ms.mean) / (self.rnd_ms.var**0.5 + 1e-8)
-            
-        #     # 裁剪，防止离群值破坏 TD update
-        #     intrinsic_rewards_norm = th.clamp(intrinsic_rewards_norm, -5, 5)
-
-        #     # 3. 加权求和
-        #     # 使用归一化后的奖励，而不是原始奖励
-        #     min_len = min(rewards.shape[1], intrinsic_rewards.shape[1])
-        #     rewards = rewards[:, :min_len] + self.args.rnd_beta * intrinsic_rewards_norm[:, :min_len]
-
-        #     # 记录用于 Tensorboard
-        #     intrinsic_rewards_mean = intrinsic_rewards_norm.mean().item()
-
-        #     # RND 更新
-        #     rnd_loss = (rnd_predict_error[:, :min_len] * mask[:, :min_len]).sum() / mask[:, :min_len].sum()
-        #     self.rnd_optimizer.zero_grad()
-        #     rnd_loss.backward()
-        #     self.rnd_optimizer.step()
-        #     rnd_loss_item = rnd_loss.item()
-
-        '''
         添加了动态的rnd机制
         '''
         # 计算当前的 rnd_beta (线性衰减逻辑)
-        # 建议设置衰减周期，例如在 6M 步时衰减到 0
         rnd_decay_steps = 6000000 
         if t_env < rnd_decay_steps:
             progress = t_env / rnd_decay_steps
@@ -185,7 +145,7 @@ class DVDNQLearner:
             self.rnd_optimizer.step()
             rnd_loss_item = rnd_loss.item()
 
-        # 2. Online Network 前向传播 (收集 Hidden States 用于 DVD)
+        # 2. Online Network 前向传播 (收集 Hidden States 用于 DVD/VAE)
         self.mac.agent.train()
         mac_out = []
         hidden_states_list = [] # 用于存储 hidden states
@@ -225,54 +185,27 @@ class DVDNQLearner:
             whole_target_hidden_states = th.stack(target_hidden_states_list, dim=1)
 
             # SARSA Target 计算
-            # 1. 获取 Target Q-values (t=1 到 T)
             target_qvals_next = target_mac_out[:, 1:]
-            # 2. 获取实际执行的 Next Actions (来自 Replay Buffer)
-            # batch["actions"] 包含了历史轨迹中真实执行的动作
-            # 我们需要的是 t+1 时刻的动作
             next_actions = batch["actions"][:, 1:]
-            # 3. 安全对齐长度
-            # 确保 Q值 和 动作 的时间维度长度一致
+            
+            # 安全对齐长度
             target_len = min(target_qvals_next.shape[1], next_actions.shape[1])
             target_qvals_next = target_qvals_next[:, :target_len]
             next_actions = next_actions[:, :target_len]
-            # 4. 根据实际动作获取 Target Q 值
-            # 不再使用 .max(dim=3)，而是使用 .gather
-            # y = r + gamma * Q_target(s', a'_actual)
+            
+            # 根据实际动作获取 Target Q 值
             target_chosen_qvals = th.gather(target_qvals_next, 3, next_actions).squeeze(3)
 
-            # # double_DQN 计算
-            # # 1. 准备 Next Q-values (Online Network)
-            # mac_out_next = mac_out[:, 1:].clone().detach()
-            # # 2. 准备 Next Available Actions
-            # # 必须使用 avail_actions 来屏蔽动作，而不是 mask(filled)
-            # avail_actions_next = batch["avail_actions"][:, 1:]
-            # # 3. 安全对齐长度
-            # target_len = min(mac_out_next.shape[1], avail_actions_next.shape[1])
-            # mac_out_next = mac_out_next[:, :target_len]
-            # avail_actions_next = avail_actions_next[:, :target_len]
-            # # 4. 屏蔽非法动作
-            # mac_out_next[avail_actions_next == 0] = -9999999
-            # # 5. 选动作 (Greedy Action)
-            # cur_next_actions = mac_out_next.max(dim=3, keepdim=True)[1]
-            # # 6. 准备 Target Q-values (Target Network)
-            # target_qvals_next = target_mac_out[:, 1:]
-            # # 同样对齐长度
-            # target_qvals_next = target_qvals_next[:, :target_len] 
-            # # 7. 根据选出的动作获取 Q 值
-            # target_chosen_qvals = th.gather(target_qvals_next, 3, cur_next_actions).squeeze(3)
-
-            # Target Mixer 前向传播
-            # 如果是 DVD Mixer，需要传入 hidden states
+            # --- Target Mixer 前向传播 (修改部分) ---
             if self.args.mixer == "dvd":
-            # target hidden states 也要取 t=1 到 T
+                # target hidden states 也要取 t=1 到 T
                 target_hs_next = whole_target_hidden_states[:, 1:1+target_len]
-                target_q_tot = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:1+target_len], target_hs_next)
+                # [修改] Mixer 返回两个值 (q_tot, vae_loss)，Target 网络不需要 vae_loss
+                target_q_tot, _ = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:1+target_len], target_hs_next)
             else:
                 target_q_tot = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:1+target_len])
 
         # 4. TD(lambda) Targets
-        # 确保 Online Q_tot 计算所需的数据长度一致
         T_min = min(chosen_action_qvals.shape[1], target_q_tot.shape[1], hidden_states_main.shape[1])
 
         # 截断数据
@@ -287,20 +220,28 @@ class DVDNQLearner:
         targets = build_td_lambda_targets(rewards, terminated, mask, target_q_tot, 
                                              self.args.n_agents, self.args.gamma, self.args.td_lambda)
 
-        # 5. Online Mixer 前向传播
+        # 5. Online Mixer 前向传播 (修改部分)
         if self.args.mixer == "dvd":
-            # DVD: 传入 Q, State, Hidden States
-            online_q_tot = self.mixer(chosen_action_qvals, batch["state"][:, :T_min], hidden_states_main)
+            # [修改] 捕获 vae_loss
+            online_q_tot, vae_loss = self.mixer(chosen_action_qvals, batch["state"][:, :T_min], hidden_states_main)
         else:
-            # Normal: 传入 Q, State
             online_q_tot = self.mixer(chosen_action_qvals, batch["state"][:, :T_min])
+            vae_loss = 0
 
-        # 6. 计算 Loss (TD Loss + Causal Loss)
+        # 6. 计算 Loss (TD Loss + Causal/VAE Loss)
         td_error = (online_q_tot - targets.detach())
         masked_td_error = mask * td_error
         loss_td = (masked_td_error ** 2).sum() / mask.sum()
 
-        total_loss = loss_td
+        # [修改] 添加 VAE Loss 到 Total Loss
+        # 建议在 args 中添加 vae_lambda，这里默认为 0.1
+        vae_lambda = getattr(self.args, 'vae_lambda', 0.1)
+        
+        if self.args.mixer == "dvd":
+            # 注意：vae_loss 已经是 scalar (batch mean)，直接加即可
+            total_loss = loss_td + vae_lambda * vae_loss
+        else:
+            total_loss = loss_td
 
         # 7. 反向传播与更新
         self.optimiser.zero_grad()
@@ -308,26 +249,25 @@ class DVDNQLearner:
         grad_norm = th.nn.utils.clip_grad_norm_(self.params, self.args.grad_norm_clip)
         self.optimiser.step()
 
-        # 下面这个是硬更新
-        # 更新 Target Network
-        # if (episode_num - self.last_target_update_episode) / self.args.target_update_interval >= 1.0:
-        #     self._update_targets()
-        #     self.last_target_update_episode = episode_num
-
         # 每一步进行软更新
         self._update_targets_soft()
 
         # 8. 日志记录
         if t_env - self.log_stats_t >= self.args.learner_log_interval:
             self.logger.log_stat("loss_td", loss_td.item(), t_env)
+            
+            # [修改] 记录 VAE Loss
+            if self.args.mixer == "dvd":
+                self.logger.log_stat("loss_vae", vae_loss.item(), t_env)
+
             self.logger.log_stat("grad_norm", grad_norm, t_env)
             self.logger.log_stat("td_error_abs", (masked_td_error.abs().sum().item()/mask.sum().item()), t_env)
             self.logger.log_stat("q_taken_mean", (chosen_action_qvals * mask).sum().item()/(mask.sum().item()), t_env)
             self.logger.log_stat("target_mean", (targets * mask).sum().item()/(mask.sum().item()), t_env)
 
             if self.use_rnd:
-                            self.logger.log_stat("rnd_loss", rnd_loss_item, t_env)
-                            self.logger.log_stat("intrinsic_rewards_mean", intrinsic_rewards_mean, t_env)
+                self.logger.log_stat("rnd_loss", rnd_loss_item, t_env)
+                self.logger.log_stat("intrinsic_rewards_mean", intrinsic_rewards_mean, t_env)
                             
             self.log_stats_t = t_env
 

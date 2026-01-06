@@ -4,12 +4,11 @@
 action_selector: "epsilon_greedy"
 epsilon_start: 1.0
 epsilon_finish: 0.05
-epsilon_anneal_time: 500000 # 500000 for 6h_vs_8z
-
+epsilon_anneal_time: 500000 
 runner: "parallel"
-batch_size_run:  4 #8 # batch_size_run=4, buffer_size = 2500, batch_size=64  for 3s5z_vs_3s6z
-buffer_size: 2500 #5000 
-batch_size: 64 #128
+batch_size_run: 4 
+buffer_size: 2500 
+batch_size: 64 
 optimizer: 'adam'
 
 t_max: 10050000
@@ -27,8 +26,8 @@ mixer: "dvd"
 abs: False
 mixing_embed_dim: 32
 hypernet_embed: 64
-lr: 0.001 # Learning rate for agents
-td_lambda: 0.3  # 原来0.6 # 0.3 for 6h_vs_8z
+lr: 0.001 
+td_lambda: 0.3 
 optimizer: 'adam'
 q_lambda: False
 
@@ -46,12 +45,20 @@ per_beta: 0.4
 return_priority: False
 
 use_rnd: True
-rnd_beta: 0.01 # 原来是0.05      # [重要] 内在奖励的权重 (beta)
-rnd_lr: 0.0005         # RND 网络的学习率
-state_shape: 0         # 这个通常由 PyMARL 自动从环境信息中获取，不需要手动填
+rnd_beta: 0.01
+rnd_lr: 0.0005 
+state_shape: 0 
 
-dvd_heads: 8         # DVD 采样次数
-gat_embed_dim: 32 # 16    # GAT 内部维度
-rnn_hidden_dim: 64   # 必须与你的 agent rnn 维度一致
+# --- [修改部分: VAE & DVD 参数] ---
 
-name: "dvd+qmix_without_abs"
+# 1. 维度兼容参数 (代码中依然用到这些变量名来确定 projection 维度)
+dvd_heads: 8          # 虽然去掉了GAT，但用于将 z 映射回 mixer 维度的"投影头"数量
+gat_embed_dim: 32     # 映射后的每个头的特征维度 (原 GAT 维度)
+rnn_hidden_dim: 64    # 必须与 agent rnn 维度一致
+
+# 2. VAE 核心参数 (新增)
+vae_latent_dim: 32    # [重要] VAE 隐变量 z 的维度，建议 32 或 64
+vae_beta: 0.05        # [重要] KL 散度的权重 (β-VAE)。控制正则化强度，过大会导致后验坍塌
+vae_lambda: 0.1       # [重要] VAE Loss 在总 Loss 中的权重。控制去混淆任务对主任务的影响
+
+name: "dvd_vae+qmix_without_abs"
